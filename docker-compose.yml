@@ -1,29 +1,37 @@
-version: '3'
+version: '3.8'
 
 services:
   backend:
-    build: ./backend
-    env_file:
-      - .env
+    build: ./server
     ports:
       - "4000:4000"
-    restart: unless-stopped
+    networks:
+      - app-network
 
   frontend:
-    build: ./frontend
+    build: ./client
     ports:
       - "3000:80"
-    restart: unless-stopped
+    networks:
+      - app-network
+    depends_on:
+      - backend
 
   nginx:
-    image: nginx:latest
+    image: nginx:stable-alpine
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+      - ./client/build:/usr/share/nginx/html:ro
     ports:
       - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/certs:/etc/nginx/certs:ro
-      - ./frontend/build:/usr/share/nginx/html:ro
+      - "80:80"
     depends_on:
       - backend
       - frontend
-    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
