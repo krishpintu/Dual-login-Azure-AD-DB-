@@ -1,4 +1,10 @@
-# Azure AD + DB Dual Login Sample with Docker and Nginx
+# Azure AD + DB Dual Login Sample with Docker and Nginx with Refresh Tokens
+
+## Overview
+- Backend: Node.js/Express with JWT & refresh token support
+- Frontend: React + MSAL + custom DB login + token refresh handling
+- Nginx: Reverse proxy with SSL termination (self-signed certs)
+- Docker Compose for easy local development and deployment
 
 ## Setup
 
@@ -14,3 +20,18 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
   -keyout nginx/certs/selfsigned.key \
   -out nginx/certs/selfsigned.crt \
   -subj "/C=US/ST=State/L=City/O=Org/OU=Unit/CN=localhost"
+
+```
+### Generate self-signed SSL cert (for localhost)
+
+```bash
+mkdir certs
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout certs/server.key -out certs/server.crt \
+  -subj "/C=US/ST=State/L=City/O=Org/CN=localhost"
+
+
+
+
+
+
