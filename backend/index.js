@@ -1,99 +1,91 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt');
+const bodyParser = require('body-parser');
 const cors = require('cors');
-const jwksClient = require('jwks-rsa');
-require('dotenv').config();
+const crypto = require('crypto');
 
 const app = express();
-app.use(express.json());
 app.use(cors());
+app.use(bodyParser.json());
 
-const PORT = process.env.PORT || 4000;
-const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key';
+const JWT_SECRET = 'your_jwt_secret_key_here_change_this_in_prod';
 
-// In-memory demo DB users (store hashed passwords in real DB)
+// Dummy DB users
 const DB_USERS = [
-  { id: 1, username: 'alice', passwordHash: bcrypt.hashSync('password123', 10), roles: ['user'] },
-  { id: 2, username: 'admin', passwordHash: bcrypt.hashSync('adminpass', 10), roles: ['admin'] },
+  { id: '1', username: 'user1', password: 'pass1', roles: ['user'] },
+  { id: '2', username: 'admin', password: 'adminpass', roles: ['admin', 'user'] }
 ];
 
-// JWKS client for Azure AD token validation
-const client = jwksClient({
-  jwksUri: `https://login.microsoftonline.com/${process.env.AZURE_TENANT_ID}/discovery/v2.0/keys`,
-});
+// In-memory refresh token store: refreshToken -> userId
+const refreshTokens = new Map();
 
-function getKey(header, callback) {
-  client.getSigningKey(header.kid, function (err, key) {
-    if (err) return callback(err);
-    const signingKey = key.getPublicKey();
-    callback(null, signingKey);
+// Middleware to verify JWT (for both Azure AD tokens or custom tokens)
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader) return res.sendStatus(401);
+
+  const token = authHeader.split(' ')[1];
+  if (!token) return res.sendStatus(401);
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.sendStatus(403);
+    req.user = user;
+    next();
   });
 }
 
 // DB login route
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
-  const user = DB_USERS.find((u) => u.username === username);
-  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+  const user = DB_USERS.find(u => u.username === username);
+  if (!user || user.password !== password) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
 
-  const valid = await bcrypt.compare(password, user.passwordHash);
-  if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-
-  const token = jwt.sign(
+  const accessToken = jwt.sign(
     { sub: user.id, username: user.username, roles: user.roles },
     JWT_SECRET,
-    { expiresIn: '1h' }
+    { expiresIn: '15m' }
   );
 
-  res.json({ token });
+  const refreshToken = crypto.randomBytes(40).toString('hex');
+  refreshTokens.set(refreshToken, user.id);
+
+  res.json({ accessToken, refreshToken });
 });
 
-// Middleware to accept Azure AD or DB JWT token
-function checkJwtDual(req, res, next) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.replace('Bearer ', '');
-
-  if (!token) return res.status(401).json({ error: 'Token missing' });
-
-  // Try DB JWT verify
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
-    req.authType = 'db';
-    return next();
-  } catch (_) {
-    // Not DB token, try Azure AD token next
+// Refresh token route
+app.post('/api/token/refresh', (req, res) => {
+  const { refreshToken } = req.body;
+  if (!refreshToken || !refreshTokens.has(refreshToken)) {
+    return res.status(401).json({ error: 'Invalid refresh token' });
   }
+  const userId = refreshTokens.get(refreshToken);
+  const user = DB_USERS.find(u => u.id === userId);
+  if (!user) return res.status(401).json({ error: 'User not found' });
 
-  jwt.verify(
-    token,
-    getKey,
-    {
-      audience: process.env.AZURE_CLIENT_ID,
-      issuer: `https://sts.windows.net/${process.env.AZURE_TENANT_ID}/`,
-      algorithms: ['RS256'],
-    },
-    (err, decoded) => {
-      if (err) return res.status(401).json({ error: 'Token invalid', details: err.message });
-      req.user = decoded;
-      req.authType = 'azuread';
-      next();
-    }
+  const newAccessToken = jwt.sign(
+    { sub: user.id, username: user.username, roles: user.roles },
+    JWT_SECRET,
+    { expiresIn: '15m' }
   );
-}
 
-// Protected profile route
-app.get('/api/profile', checkJwtDual, async (req, res) => {
-  if (req.authType === 'azuread') {
-    // For demo, just return token claims
-    res.json({ user: req.user, authType: 'azuread' });
-  } else {
-    // DB user info
-    res.json({ user: req.user, authType: 'db' });
-  }
+  res.json({ accessToken: newAccessToken });
 });
 
+// Protected profile route example
+app.get('/api/profile', authenticateToken, (req, res) => {
+  const user = DB_USERS.find(u => u.id === req.user.sub);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  res.json({
+    id: user.id,
+    username: user.username,
+    roles: user.roles,
+  });
+});
+
+const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Backend listening on port ${PORT}`);
 });
