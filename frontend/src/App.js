@@ -1,129 +1,147 @@
-import React, { useState } from "react";
-import { PublicClientApplication, InteractionRequiredAuthError } from "@azure/msal-browser";
-import { MsalProvider, useMsal, useIsAuthenticated } from "@azure/msal-react";
+import React, { useState, useEffect } from 'react';
+import {
+  PublicClientApplication,
+  InteractionStatus,
+} from '@azure/msal-browser';
+import { MsalProvider, useMsal, useIsAuthenticated } from '@azure/msal-react';
 
+// MSAL config
 const msalConfig = {
   auth: {
-    clientId: process.env.REACT_APP_AZURE_CLIENT_ID,
-    authority: `https://login.microsoftonline.com/${process.env.REACT_APP_AZURE_TENANT_ID}`,
-    redirectUri: window.location.origin,
+    clientId: 'YOUR_AZURE_AD_CLIENT_ID',
+    authority: 'https://login.microsoftonline.com/YOUR_TENANT_ID',
+    redirectUri: 'https://localhost',
   },
-};
-
-const loginRequest = {
-  scopes: ["User.Read"],
 };
 
 const msalInstance = new PublicClientApplication(msalConfig);
 
-function ProfileContent() {
+function AzureLoginButton() {
   const { instance, accounts } = useMsal();
   const isAuthenticated = useIsAuthenticated();
 
-  const [dbUsername, setDbUsername] = useState("");
-  const [dbPassword, setDbPassword] = useState("");
-  const [dbToken, setDbToken] = useState(null);
-
-  const handleAzureLogin = () => {
-    instance.loginPopup(loginRequest).catch(console.error);
-  };
-
-  const handleDbLogin = async () => {
-    try {
-      const res = await fetch("/api/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: dbUsername, password: dbPassword }),
-      });
-      if (!res.ok) throw new Error("Login failed");
-      const data = await res.json();
-      setDbToken(data.token);
-      alert("DB login successful!");
-    } catch (e) {
-      alert("DB login error: " + e.message);
-    }
-  };
-
-  const callApiWithDbToken = async () => {
-    if (!dbToken) return;
-    const res = await fetch("/api/profile", {
-      headers: { Authorization: `Bearer ${dbToken}` },
+  const login = () => {
+    instance.loginPopup({
+      scopes: ['User.Read'],
+    }).catch(e => {
+      console.error(e);
     });
-    const data = await res.json();
-    alert("Profile: " + JSON.stringify(data));
-  };
-
-  const callApiWithMsal = async () => {
-    if (!isAuthenticated) return;
-    try {
-      const response = await instance.acquireTokenSilent({
-        ...loginRequest,
-        account: accounts[0],
-      });
-      const accessToken = response.accessToken;
-      const res = await fetch("/api/profile", {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      const data = await res.json();
-      alert("Azure AD profile: " + JSON.stringify(data));
-    } catch (error) {
-      if (error instanceof InteractionRequiredAuthError) {
-        instance.acquireTokenPopup(loginRequest);
-      }
-      console.error(error);
-    }
   };
 
   return (
-    <div style={{ maxWidth: 600, margin: "auto", padding: 20 }}>
-      <h1>Dual Login (Azure AD + DB)</h1>
-
-      <section style={{ marginBottom: 40 }}>
-        <h2>Azure AD Login</h2>
-        {isAuthenticated ? (
-          <>
-            <p>Welcome {accounts[0].username}</p>
-            <button onClick={callApiWithMsal}>Get Profile</button>
-            <button onClick={() => instance.logoutPopup()}>Logout</button>
-          </>
-        ) : (
-          <button onClick={handleAzureLogin}>Login with Azure AD</button>
-        )}
-      </section>
-
-      <section>
-        <h2>DB Login</h2>
-        <input
-          placeholder="Username"
-          value={dbUsername}
-          onChange={(e) => setDbUsername(e.target.value)}
-        />
-        <br />
-        <input
-          placeholder="Password"
-          type="password"
-          value={dbPassword}
-          onChange={(e) => setDbPassword(e.target.value)}
-        />
-        <br />
-        <button onClick={handleDbLogin}>Login with DB</button>
-
-        {dbToken && (
-          <>
-            <p>DB user logged in</p>
-            <button onClick={callApiWithDbToken}>Get DB Profile</button>
-            <button onClick={() => setDbToken(null)}>Logout DB User</button>
-          </>
-        )}
-      </section>
+    <div>
+      {isAuthenticated ? (
+        <p>Logged in as: {accounts[0].username}</p>
+      ) : (
+        <button onClick={login}>Login with Azure AD</button>
+      )}
     </div>
   );
 }
 
-export default function App() {
+function DbLogin({ onTokens }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [accessToken, setAccessToken] = useState(null);
+  const [refreshToken, setRefreshToken] = useState(null);
+
+  const login = async () => {
+    const res = await fetch('https://localhost/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setAccessToken(data.accessToken);
+      setRefreshToken(data.refreshToken);
+      onTokens(data.accessToken, data.refreshToken);
+    } else {
+      alert('Login failed');
+    }
+  };
+
+  // Token refresh function
+  const refreshAccessToken = async () => {
+    const res = await fetch('https://localhost/api/token/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setAccessToken(data.accessToken);
+      onTokens(data.accessToken, refreshToken);
+      return data.accessToken;
+    } else {
+      alert('Session expired. Please login again.');
+      setAccessToken(null);
+      setRefreshToken(null);
+      onTokens(null, null);
+      return null;
+    }
+  };
+
+  // Example: call protected API with token refresh support
+  const callProfile = async () => {
+    if (!accessToken) return alert('Please login first');
+    let res = await fetch('https://localhost/api/profile', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (res.status === 401) {
+      // Try refresh token
+      const newToken = await refreshAccessToken();
+      if (!newToken) return;
+      res = await fetch('https://localhost/api/profile', {
+        headers: { Authorization: `Bearer ${newToken}` },
+      });
+    }
+    if (res.ok) {
+      const data = await res.json();
+      alert('Profile: ' + JSON.stringify(data));
+    } else {
+      alert('Failed to fetch profile');
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <h3>DB Login</h3>
+      <input
+        placeholder="Username"
+        value={username}
+        onChange={e => setUsername(e.target.value)}
+      /><br />
+      <input
+        placeholder="Password"
+        type="password"
+        value={password}
+        onChange={e => setPassword(e.target.value)}
+      /><br />
+      <button onClick={login}>Login</button>
+      <button onClick={callProfile} style={{ marginLeft: 10 }}>
+        Get Profile
+      </button>
+    </div>
+  );
+}
+
+function App() {
+  const [dbAccessToken, setDbAccessToken] = useState(null);
+  const [dbRefreshToken, setDbRefreshToken] = useState(null);
+
   return (
     <MsalProvider instance={msalInstance}>
-      <ProfileContent />
+      <div style={{ padding: 20 }}>
+        <h1>Azure AD + DB Dual Login</h1>
+        <AzureLoginButton />
+        <DbLogin onTokens={(at, rt) => {
+          setDbAccessToken(at);
+          setDbRefreshToken(rt);
+        }} />
+      </div>
     </MsalProvider>
   );
 }
+
+export default App;
